@@ -1,108 +1,139 @@
 import socket
-import requests
 import json
 import time
+import ssl
+import re
 
-# ========== Configuration ==========
+def extract_domain(url):
+    """Extract domain from URL, removing protocol and path"""
+    match = re.search(r'(?:https?://)?([^/]+)', url)
+    return match.group(1) if match else url
 
-# IP address of the server
-SERVER_IP = '127.0.0.1'  # CHANGE this to the actual server IP if on different machine
-
-# Port number where server is listening
-SERVER_PORT = 9000
-
-# Open-Meteo API endpoint (latitude and longitude for New Delhi as example)
-LATITUDE = 28.61
-LONGITUDE = 77.20
-
-# ========== Utility Functions ==========
-
-def debug_print(header, message):
-    print(f"\n===== {header} =====")
-    print(message)
-
-# ========== Weather API Fetching ==========
-
-def get_weather_data(latitude, longitude):
-    url = (
-        f"https://api.open-meteo.com/v1/forecast?"
-        f"latitude={latitude}&longitude={longitude}&current_weather=true"
-    )
+def send_http_request_via_socket(host, data):
+    """Send HTTP POST request directly via socket"""
+    # Create socket and wrap with SSL
+    context = ssl.create_default_context()
     
+    print(f"Connecting to {host} on port 443...")
+    with socket.create_connection((host, 443)) as sock:
+        with context.wrap_socket(sock, server_hostname=host) as ssock:
+            print(f"SSL established. Peer: {ssock.getpeercert()}")
+            
+            # Prepare JSON data
+            json_data = json.dumps(data)
+            
+            # Create HTTP request
+            http_request = (
+                f"POST / HTTP/1.1\r\n"
+                f"Host: {host}\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(json_data)}\r\n"
+                f"Connection: close\r\n"
+                f"\r\n"
+                f"{json_data}"
+            )
+            
+            # Send request
+            print("Sending HTTP request via socket...")
+            ssock.sendall(http_request.encode())
+            
+            # Receive response
+            print("Receiving response...")
+            response = b""
+            while True:
+                chunk = ssock.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+            
+            return response.decode('utf-8')
+
+def parse_http_response(response):
+    """Parse HTTP response to extract status code and body"""
+    # Split headers and body
+    parts = response.split('\r\n\r\n', 1)
+    if len(parts) < 2:
+        return None, None, "Invalid HTTP response format"
+    
+    headers, body = parts
+    
+    # Extract status code
+    status_line = headers.split('\r\n')[0]
+    status_match = re.search(r'HTTP/\d\.\d (\d+)', status_line)
+    status_code = int(status_match.group(1)) if status_match else None
+    
+    # Try to parse body as JSON
     try:
-        debug_print("API REQUEST", f"Requesting data from Open-Meteo API:\n{url}")
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-
-        data = response.json()
-        debug_print("API RESPONSE", json.dumps(data, indent=4))
-
-        current = data.get("current_weather", {})
-        temperature = current.get("temperature", "N/A")
-        windspeed = current.get("windspeed", "N/A")
-        winddir = current.get("winddirection", "N/A")
-        weather_code = current.get("weathercode", "N/A")
-        time_value = current.get("time", "N/A")
-
-        formatted_data = (
-            f"Location: ({latitude}, {longitude})\n"
-            f"Time: {time_value}\n"
-            f"Temperature: {temperature} °C\n"
-            f"Windspeed: {windspeed} km/h\n"
-            f"Wind Direction: {winddir}°\n"
-            f"Weather Code: {weather_code}"
-        )
-
-        debug_print("FORMATTED WEATHER DATA", formatted_data)
-        return formatted_data
-
-    except requests.exceptions.Timeout:
-        debug_print("ERROR", "API request timed out.")
-    except requests.exceptions.ConnectionError:
-        debug_print("ERROR", "Failed to connect to API server.")
-    except requests.exceptions.HTTPError as err:
-        debug_print("ERROR", f"HTTP error: {err}")
-    except Exception as e:
-        debug_print("ERROR", f"Unknown error fetching weather data: {str(e)}")
-
-    return None
-
-# ========== Socket Connection ==========
-
-def send_to_server(data, server_ip, server_port):
-    try:
-        debug_print("SOCKET", f"Attempting to connect to server {server_ip}:{server_port}...")
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
-            client_socket.settimeout(10)
-            client_socket.connect((server_ip, server_port))
-            debug_print("SOCKET", "Connection established.")
-            client_socket.sendall(data.encode())
-            debug_print("SOCKET", "Data sent successfully.")
-    except socket.timeout:
-        debug_print("ERROR", "Socket connection timed out.")
-    except ConnectionRefusedError:
-        debug_print("ERROR", "Connection refused by the server. Is the server running?")
-    except socket.gaierror:
-        debug_print("ERROR", f"Invalid IP address or hostname: {server_ip}")
-    except Exception as e:
-        debug_print("ERROR", f"Unknown socket error: {str(e)}")
-
-# ========== Main Execution ==========
+        json_body = json.loads(body)
+        return status_code, json_body, None
+    except json.JSONDecodeError:
+        return status_code, body, None
 
 def main():
-    print("=== WEATHER CLIENT DEBUG MODE ===")
-
-    # Step 1: Get weather data
-    weather_data = get_weather_data(LATITUDE, LONGITUDE)
-
-    if not weather_data:
-        debug_print("EXIT", "Weather data could not be retrieved. Exiting client.")
-        return
-
-    # Step 2: Send data to server
-    send_to_server(weather_data, SERVER_IP, SERVER_PORT)
-
-    debug_print("DONE", "Client execution completed.")
+    print("=== WEATHER CLIENT (SOCKET THROUGH TUNNEL) ===")
+    
+    # Create weather data
+    weather_data = {
+        "location": "(28.61, 77.20)",
+        "temperature": 28,
+        "windspeed": 10,
+        "winddirection": 90,
+        "weathercode": 1,
+        "time": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
+    # Ask for the tunnel URL from the server logs
+    print("\nPlease check your server logs for the LocalTunnel URL.")
+    print("It should look something like: https://weather-monitoring.loca.lt")
+    
+    tunnel_url = "https://weather-monitoring.loca.lt"
+    if not tunnel_url:
+        tunnel_url = "weather-monitoring.loca.lt"  # Default
+    
+    # Extract domain from URL if needed
+    host = extract_domain(tunnel_url)
+    
+    print(f"\nConnecting to tunnel at {host}")
+    print("\nSending weather data:")
+    print(json.dumps(weather_data, indent=2))
+    
+    try:
+        # Send HTTP request via socket
+        response = send_http_request_via_socket(host, weather_data)
+        
+        # Parse response
+        status_code, body, error = parse_http_response(response)
+        
+        if error:
+            print(f"Error parsing response: {error}")
+            print(f"Raw response: {response[:200]}...")
+        else:
+            print(f"Received HTTP status code: {status_code}")
+            
+            if status_code == 200:
+                if isinstance(body, dict):
+                    print(f"Server response: {json.dumps(body, indent=2)}")
+                    print("\nData transmission successful!")
+                else:
+                    print("Server responded but not with valid JSON.")
+                    print(f"Response content: {body[:200]}...")
+            else:
+                print(f"Server responded with error status code: {status_code}")
+                print(f"Response content: {body}")
+                
+    except socket.gaierror:
+        print(f"Error: Could not resolve host '{host}'")
+    except socket.timeout:
+        print("Error: Connection timed out")
+    except ConnectionRefusedError:
+        print(f"Error: Connection refused by host {host}")
+    except ssl.SSLError as e:
+        print(f"SSL Error: {str(e)}")
+    except Exception as e:
+        print(f"Error: {str(e)}")
+    
+    print("\nPress Enter to exit...")
+    input()
 
 if __name__ == "__main__":
     main()
