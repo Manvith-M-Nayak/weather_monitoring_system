@@ -5,6 +5,7 @@ from tkinter import scrolledtext
 from tkinter import ttk
 import time
 import json
+import ssl
 
 # Server Configuration
 HOST = '0.0.0.0'
@@ -97,12 +98,18 @@ class WeatherDataDisplay:
 
 # Server Thread
 def start_server(gui, display_panel):
+    # Create a basic TCP socket
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    
+    # Wrap the socket with SSL context
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certfile="server.crt", keyfile="server.key")
+    
     try:
         server_socket.bind((HOST, PORT))
         server_socket.listen(5)
-        gui.log(f"Listening on {HOST}:{PORT}", "INFO")
-        gui.update_status(f"Listening on {HOST}:{PORT}")
+        gui.log(f"Listening securely on {HOST}:{PORT}", "INFO")
+        gui.update_status(f"Listening securely on {HOST}:{PORT}")
     except Exception as e:
         gui.log(f"Failed to bind server socket: {str(e)}", "ERROR")
         return
@@ -110,12 +117,20 @@ def start_server(gui, display_panel):
     while True:
         try:
             client_socket, client_addr = server_socket.accept()
-            gui.clients_connected += 1
-            gui.log(f"Client connected: {client_addr}", "CONNECT")
-            gui.update_status(f"{gui.clients_connected} client(s) connected")
-            client_thread = threading.Thread(target=handle_client, args=(client_socket, gui, display_panel))
-            client_thread.daemon = True
-            client_thread.start()
+
+            # Wrap client connection with SSL
+            try:
+                ssl_client_socket = context.wrap_socket(client_socket, server_side=True)
+                gui.clients_connected += 1
+                gui.log(f"Secure client connected: {client_addr}", "CONNECT")
+                gui.update_status(f"{gui.clients_connected} client(s) connected")
+
+                client_thread = threading.Thread(target=handle_client, args=(ssl_client_socket, gui, display_panel))
+                client_thread.daemon = True
+                client_thread.start()
+            except ssl.SSLError as ssl_err:
+                gui.log(f"SSL error with client {client_addr}: {str(ssl_err)}", "ERROR")
+                client_socket.close()
         except Exception as e:
             gui.log(f"Error accepting client: {str(e)}", "ERROR")
 
@@ -147,3 +162,4 @@ if __name__ == "__main__":
     server_thread.daemon = True
     server_thread.start()
     root.mainloop()
+                

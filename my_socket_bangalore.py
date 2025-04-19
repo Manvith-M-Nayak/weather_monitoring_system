@@ -1,21 +1,24 @@
 import socket
 import requests
 import json
-import time
+import ssl
 
 # ========== Configuration ==========
 
-# IP address of the server
-SERVER_IP = '127.0.0.1'  # CHANGE this to the actual server IP if on different machine
+# IP address of the server (must match certificate CN or SAN)
+SERVER_IP = 'localhost'  # or 127.0.0.1 if your cert supports it
 
-# Port number where server is listening
+# Port number for the secure SSL socket
 SERVER_PORT = 9000
 
-# Coordinates for weather API (example: Bangalore)
+# SSL certificate file from the server (self-signed or CA-signed)
+CERT_FILE = 'server.crt'  # Must be trusted by this client
+
+# Coordinates for weather API (e.g., Bangalore)
 LATITUDE = 12.9716
 LONGITUDE = 77.5946
 
-# ========== Utility Functions ==========
+# ========== Utility Function ==========
 
 def debug_print(header, message):
     print(f"\n===== {header} =====")
@@ -32,7 +35,7 @@ def get_weather_data(latitude, longitude):
         f"https://api.open-meteo.com/v1/forecast?"
         f"latitude={latitude}&longitude={longitude}&current_weather=true"
     )
-    
+
     try:
         debug_print("API REQUEST", f"Requesting data from Open-Meteo API:\n{url}")
         response = requests.get(url, timeout=10)
@@ -42,13 +45,12 @@ def get_weather_data(latitude, longitude):
         debug_print("API RESPONSE", json.dumps(data, indent=4))
 
         current = data.get("current_weather", {})
-        temperature = current.get("temperature", None)
-        windspeed = current.get("windspeed", None)
-        wind_direction = current.get("winddirection", None)
-        weather_code = current.get("weathercode", None)
-        time_value = current.get("time", None)
+        temperature = current.get("temperature")
+        windspeed = current.get("windspeed")
+        wind_direction = current.get("winddirection")
+        weather_code = current.get("weathercode")
+        time_value = current.get("time")
 
-        # Prepare a dictionary in strict JSON-compatible format
         json_data = {
             "location": [latitude, longitude],
             "time": time_value,
@@ -72,44 +74,60 @@ def get_weather_data(latitude, longitude):
 
     return None
 
-# ========== Socket Connection ==========
+# ========== Secure Socket Connection ==========
 
-def send_to_server(json_dict, server_ip, server_port):
+def send_to_server_secure(json_dict, server_ip, server_port, certfile):
     """
-    Sends a Python dictionary to the server as a JSON string over a TCP socket.
+    Sends a JSON-formatted dictionary to the server securely using SSL.
+    Waits for an acknowledgment from the server.
     """
     try:
-        json_string = json.dumps(json_dict)  # Serialize the dictionary to JSON string
-        debug_print("SOCKET", f"Connecting to server {server_ip}:{server_port}...")
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
-            client_socket.settimeout(10)
-            client_socket.connect((server_ip, server_port))
-            debug_print("SOCKET", "Connection established.")
-            client_socket.sendall(json_string.encode('utf-8'))
-            debug_print("SOCKET", "JSON data sent successfully.")
+        json_string = json.dumps(json_dict)
+
+        debug_print("SSL SETUP", f"Using certificate file: {certfile}")
+        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=certfile)
+
+        debug_print("SOCKET", f"Connecting to SSL server {server_ip}:{server_port}...")
+        with socket.create_connection((server_ip, server_port), timeout=10) as raw_sock:
+            with context.wrap_socket(raw_sock, server_hostname=server_ip) as ssl_sock:
+                debug_print("SOCKET", "SSL handshake successful. Secure connection established.")
+                
+                # Send the JSON data
+                ssl_sock.sendall(json_string.encode('utf-8'))
+                debug_print("SOCKET", "Secure JSON data sent successfully.")
+
+                # Wait for server acknowledgment
+                response = ssl_sock.recv(1024)
+                if response:
+                    debug_print("SERVER RESPONSE", response.decode())
+                else:
+                    debug_print("SERVER RESPONSE", "No response received from server.")
+
+    except ssl.SSLError as ssl_err:
+        debug_print("SSL ERROR", f"SSL error: {ssl_err}")
     except socket.timeout:
         debug_print("ERROR", "Socket connection timed out.")
     except ConnectionRefusedError:
         debug_print("ERROR", "Connection refused by the server. Is the server running?")
-    except socket.gaierror:
-        debug_print("ERROR", f"Invalid IP address or hostname: {server_ip}")
+    except FileNotFoundError:
+        debug_print("ERROR", f"Certificate file '{certfile}' not found.")
     except Exception as e:
-        debug_print("ERROR", f"Unknown socket error: {str(e)}")
+        debug_print("ERROR", f"Unknown socket/SSL error: {str(e)}")
 
 # ========== Main Execution ==========
 
 def main():
-    print("=== WEATHER CLIENT DEBUG MODE ===")
+    print("=== WEATHER CLIENT (SSL MODE) ===")
 
-    # Step 1: Get weather data as a Python dictionary
+    # Step 1: Fetch weather data
     weather_data = get_weather_data(LATITUDE, LONGITUDE)
 
     if not weather_data:
         debug_print("EXIT", "Weather data could not be retrieved. Exiting client.")
         return
 
-    # Step 2: Send JSON data to server
-    send_to_server(weather_data, SERVER_IP, SERVER_PORT)
+    # Step 2: Send data securely using SSL
+    send_to_server_secure(weather_data, SERVER_IP, SERVER_PORT, CERT_FILE)
 
     debug_print("DONE", "Client execution completed.")
 
