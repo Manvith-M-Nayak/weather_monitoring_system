@@ -2,6 +2,8 @@ import socket
 import requests
 import json
 import ssl
+import time
+from datetime import datetime
 
 # ========== Configuration ==========
 
@@ -18,11 +20,25 @@ CERT_FILE = 'server.crt'  # Must be trusted by this client
 LATITUDE = 12.9716
 LONGITUDE = 77.5946
 
-# ========== Utility Function ==========
+# Station identification (added for enhanced display)
+STATION_INFO = {
+    "station_id": "WS-001",
+    "station_name": "Weather Monitor Client"
+}
+
+# ========== Utility Functions ==========
 
 def debug_print(header, message):
-    print(f"\n===== {header} =====")
+    """Print debug information with a formatted header"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n===== {header} [{timestamp}] =====")
     print(message)
+
+def format_value(value, unit=""):
+    """Format a value with its unit for display"""
+    if value is None:
+        return "N/A"
+    return f"{value} {unit}".strip()
 
 # ========== Weather API Fetching ==========
 
@@ -51,7 +67,10 @@ def get_weather_data(latitude, longitude):
         weather_code = current.get("weathercode")
         time_value = current.get("time")
 
+        # Enhance the data with station information
         json_data = {
+            "station_id": STATION_INFO["station_id"],
+            "station_name": STATION_INFO["station_name"],
             "location": [latitude, longitude],
             "time": time_value,
             "temperature": f"{temperature} °C" if temperature is not None else "N/A",
@@ -90,11 +109,12 @@ def send_to_server_secure(json_dict, server_ip, server_port, certfile):
         debug_print("SOCKET", f"Connecting to SSL server {server_ip}:{server_port}...")
         with socket.create_connection((server_ip, server_port), timeout=10) as raw_sock:
             with context.wrap_socket(raw_sock, server_hostname=server_ip) as ssl_sock:
-                debug_print("SOCKET", "SSL handshake successful. Secure connection established.")
+                debug_print("SSL CONNECTION", "SSL handshake successful. Secure connection established.")
+                debug_print("CONNECTION INFO", f"Using cipher: {ssl_sock.cipher()}")
                 
                 # Send the JSON data
                 ssl_sock.sendall(json_string.encode('utf-8'))
-                debug_print("SOCKET", "Secure JSON data sent successfully.")
+                debug_print("DATA SENT", "Secure JSON data sent successfully.")
 
                 # Wait for server acknowledgment
                 response = ssl_sock.recv(1024)
@@ -114,22 +134,72 @@ def send_to_server_secure(json_dict, server_ip, server_port, certfile):
     except Exception as e:
         debug_print("ERROR", f"Unknown socket/SSL error: {str(e)}")
 
+# ========== Periodic Data Sending ==========
+
+def periodic_sender(interval=60):
+    """
+    Periodically fetches weather data and sends it to the server.
+    
+    Args:
+        interval: Time in seconds between data transmissions
+    """
+    try:
+        while True:
+            debug_print("SCHEDULER", f"Fetching and sending weather data (interval: {interval}s)")
+            
+            # Step 1: Fetch weather data
+            weather_data = get_weather_data(LATITUDE, LONGITUDE)
+            
+            if weather_data:
+                # Step 2: Send data securely using SSL
+                send_to_server_secure(weather_data, SERVER_IP, SERVER_PORT, CERT_FILE)
+            else:
+                debug_print("WARNING", "Weather data could not be retrieved. Skipping this update.")
+            
+            # Wait for next interval
+            debug_print("SCHEDULER", f"Next update in {interval} seconds")
+            time.sleep(interval)
+            
+    except KeyboardInterrupt:
+        debug_print("EXIT", "Client stopped by user (Ctrl+C).")
+    except Exception as e:
+        debug_print("CRITICAL ERROR", f"Unexpected error in periodic sender: {str(e)}")
+
 # ========== Main Execution ==========
 
 def main():
-    print("=== WEATHER CLIENT (SSL MODE) ===")
+    print("\n" + "="*60)
+    print(" WEATHER MONITORING CLIENT (SSL MODE) ".center(60, "="))
+    print("="*60 + "\n")
 
-    # Step 1: Fetch weather data
-    weather_data = get_weather_data(LATITUDE, LONGITUDE)
+    mode = input("Run mode [O]nce or [C]ontinuous (default: Once)? ").lower()
+    
+    if mode == 'c':
+        interval = input("Update interval in seconds (default: 60): ")
+        try:
+            interval = int(interval) if interval.strip() else 60
+        except ValueError:
+            interval = 60
+            print(f"Invalid input. Using default interval of {interval} seconds.")
+        
+        print(f"\nStarting continuous monitoring with {interval}s interval...")
+        print("Press Ctrl+C to stop the client.")
+        periodic_sender(interval)
+    else:
+        # Default mode: Run once
+        debug_print("MODE", "Running in single-transmission mode")
+        
+        # Step 1: Fetch weather data
+        weather_data = get_weather_data(LATITUDE, LONGITUDE)
 
-    if not weather_data:
-        debug_print("EXIT", "Weather data could not be retrieved. Exiting client.")
-        return
+        if not weather_data:
+            debug_print("EXIT", "Weather data could not be retrieved. Exiting client.")
+            return
 
-    # Step 2: Send data securely using SSL
-    send_to_server_secure(weather_data, SERVER_IP, SERVER_PORT, CERT_FILE)
+        # Step 2: Send data securely using SSL
+        send_to_server_secure(weather_data, SERVER_IP, SERVER_PORT, CERT_FILE)
 
-    debug_print("DONE", "Client execution completed.")
+        debug_print("DONE", "Client execution completed.")
 
 if __name__ == "__main__":
     main()
