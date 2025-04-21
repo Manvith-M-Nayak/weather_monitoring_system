@@ -7,10 +7,76 @@ import time
 import json
 import ssl
 from datetime import datetime
+import requests
 
 # Server Configuration
 HOST = '0.0.0.0'
 PORT = 9000
+
+# Weather code translation dictionary
+WEATHER_CODES = {
+    0: "Clear sky",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Fog",
+    48: "Depositing rime fog",
+    51: "Light drizzle",
+    53: "Moderate drizzle",
+    55: "Dense drizzle",
+    56: "Light freezing drizzle",
+    57: "Dense freezing drizzle",
+    61: "Slight rain",
+    63: "Moderate rain",
+    65: "Heavy rain",
+    66: "Light freezing rain",
+    67: "Heavy freezing rain",
+    71: "Slight snow fall",
+    73: "Moderate snow fall",
+    75: "Heavy snow fall",
+    77: "Snow grains",
+    80: "Slight rain showers",
+    81: "Moderate rain showers",
+    82: "Violent rain showers",
+    85: "Slight snow showers",
+    86: "Heavy snow showers",
+    95: "Thunderstorm",
+    96: "Thunderstorm with slight hail",
+    99: "Thunderstorm with heavy hail"
+}
+
+# Global dictionary to store data from all weather stations
+stations_data = {}
+
+# Function to get location name from coordinates
+def get_location_name(lat, lon):
+    """Get location name from coordinates using Nominatim API"""
+    try:
+        url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json"
+        headers = {
+            "User-Agent": "WeatherMonitoringServer/1.0"
+        }
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            if "address" in data:
+                address = data["address"]
+                # Try to construct a sensible location name
+                if "city" in address:
+                    return address["city"]
+                elif "town" in address:
+                    return address["town"]
+                elif "village" in address:
+                    return address["village"]
+                elif "suburb" in address:
+                    return address["suburb"]
+                elif "county" in address:
+                    return address["county"]
+                else:
+                    return f"{address.get('state', '')}, {address.get('country', '')}"
+        return "Unknown Location"
+    except Exception:
+        return "Unknown Location"
 
 # GUI Class for Main Server Window
 class WeatherServerGUI:
@@ -32,7 +98,10 @@ class WeatherServerGUI:
                                      style="Header.TLabel")
         self.header_label.pack(side=tk.LEFT)
         
-        # Server controls could go here in future versions
+        # View Data Button
+        self.view_button = ttk.Button(header_frame, text="View Weather Data", 
+                                     command=self.open_data_viewer)
+        self.view_button.pack(side=tk.RIGHT, padx=10)
         
         # Scrolled text area for logs
         self.text_area = scrolledtext.ScrolledText(root, wrap=tk.WORD, width=90, height=25, 
@@ -69,6 +138,7 @@ class WeatherServerGUI:
         self.text_area.tag_config("CONNECT", foreground="orange")
 
         self.clients_connected = 0
+        self.data_viewer = None
 
     def setup_styles(self):
         style = ttk.Style()
@@ -85,6 +155,13 @@ class WeatherServerGUI:
     def update_status(self, message):
         self.status_var.set(f"Status: {message}")
         self.connection_var.set(f"Connections: {self.clients_connected}")
+    
+    def open_data_viewer(self):
+        if self.data_viewer is None or not self.data_viewer.is_alive():
+            self.data_viewer = WeatherDataDisplay(self.root)
+        else:
+            self.data_viewer.window.focus_set()
+            self.data_viewer.window.lift()
 
 # GUI Class for Weather Data Display
 class WeatherDataDisplay:
@@ -114,6 +191,26 @@ class WeatherDataDisplay:
                                        style="Subtitle.TLabel")
         self.subtitle_label.pack(pady=(0, 10))
         
+        # Station selection dropdown
+        self.station_selection_frame = ttk.Frame(main_frame)
+        self.station_selection_frame.pack(fill=tk.X, pady=5)
+        
+        self.station_label = ttk.Label(self.station_selection_frame, text="Select Station:", 
+                                      style="StationSelector.TLabel")
+        self.station_label.pack(side=tk.LEFT, padx=10)
+        
+        self.station_var = tk.StringVar()
+        self.station_dropdown = ttk.Combobox(self.station_selection_frame, 
+                                           textvariable=self.station_var, 
+                                           state="readonly")
+        self.station_dropdown.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
+        self.station_dropdown.bind("<<ComboboxSelected>>", self.on_station_selected)
+        
+        # Refresh button
+        self.refresh_button = ttk.Button(self.station_selection_frame, text="Refresh", 
+                                        command=self.refresh_station_list)
+        self.refresh_button.pack(side=tk.RIGHT, padx=10)
+        
         # Time display
         self.time_frame = ttk.Frame(main_frame)
         self.time_frame.pack(fill=tk.X, pady=5)
@@ -142,6 +239,15 @@ class WeatherDataDisplay:
                                  style="StationDetail.TLabel")
         self.id_label.pack(anchor="w", padx=20, pady=2)
         
+        # Current weather condition frame
+        self.weather_frame = ttk.Frame(main_frame, style="Weather.TFrame")
+        self.weather_frame.pack(fill=tk.X, pady=10, padx=5)
+        
+        self.weather_condition_var = tk.StringVar(value="Weather: Unknown")
+        self.weather_condition_label = ttk.Label(self.weather_frame, textvariable=self.weather_condition_var,
+                                               style="WeatherCondition.TLabel")
+        self.weather_condition_label.pack(anchor="center", pady=5)
+        
         # Summary section
         self.summary_frame = ttk.Frame(main_frame, style="Summary.TFrame")
         self.summary_frame.pack(fill=tk.X, pady=10, padx=5)
@@ -159,33 +265,7 @@ class WeatherDataDisplay:
                                         style="ValueDescription.TLabel")
         self.temp_desc_label.pack()
         
-        # Display humidity
-        self.humidity_frame = ttk.Frame(self.summary_frame)
-        self.humidity_frame.pack(side=tk.LEFT, padx=10, pady=10)
-        
-        self.humidity_var = tk.StringVar(value="--%")
-        self.humidity_label = ttk.Label(self.humidity_frame, textvariable=self.humidity_var, 
-                                       style="SummaryValue.TLabel")
-        self.humidity_label.pack()
-        
-        self.humidity_desc_label = ttk.Label(self.humidity_frame, text="Humidity", 
-                                            style="ValueDescription.TLabel")
-        self.humidity_desc_label.pack()
-        
-        # Display pressure
-        self.pressure_frame = ttk.Frame(self.summary_frame)
-        self.pressure_frame.pack(side=tk.LEFT, padx=10, pady=10)
-        
-        self.pressure_var = tk.StringVar(value="-- hPa")
-        self.pressure_label = ttk.Label(self.pressure_frame, textvariable=self.pressure_var, 
-                                       style="SummaryValue.TLabel")
-        self.pressure_label.pack()
-        
-        self.pressure_desc_label = ttk.Label(self.pressure_frame, text="Pressure", 
-                                            style="ValueDescription.TLabel")
-        self.pressure_desc_label.pack()
-        
-        # Display wind
+        # Display wind speed
         self.wind_frame = ttk.Frame(self.summary_frame)
         self.wind_frame.pack(side=tk.LEFT, padx=10, pady=10)
         
@@ -197,6 +277,19 @@ class WeatherDataDisplay:
         self.wind_desc_label = ttk.Label(self.wind_frame, text="Wind Speed", 
                                         style="ValueDescription.TLabel")
         self.wind_desc_label.pack()
+        
+        # Display wind direction
+        self.wind_dir_frame = ttk.Frame(self.summary_frame)
+        self.wind_dir_frame.pack(side=tk.LEFT, padx=10, pady=10)
+        
+        self.wind_dir_var = tk.StringVar(value="--°")
+        self.wind_dir_label = ttk.Label(self.wind_dir_frame, textvariable=self.wind_dir_var, 
+                                      style="SummaryValue.TLabel")
+        self.wind_dir_label.pack()
+        
+        self.wind_dir_desc_label = ttk.Label(self.wind_dir_frame, text="Wind Direction", 
+                                           style="ValueDescription.TLabel")
+        self.wind_dir_desc_label.pack()
         
         # Detailed data section with notebook
         self.notebook = ttk.Notebook(main_frame)
@@ -234,6 +327,9 @@ class WeatherDataDisplay:
         
         # Placeholder for storing the last received data timestamp
         self.last_update_time = None
+        
+        # Refresh the station list initially
+        self.refresh_station_list()
 
     def setup_styles(self):
         style = ttk.Style()
@@ -242,6 +338,7 @@ class WeatherDataDisplay:
         style.configure("Main.TFrame", background="#f0f5fa")
         style.configure("Header.TFrame", background="#e0ebf5")
         style.configure("Station.TFrame", background="#ffffff", relief="solid", borderwidth=1)
+        style.configure("Weather.TFrame", background="#ffffff", relief="solid", borderwidth=1)
         style.configure("Summary.TFrame", background="#ffffff", relief="solid", borderwidth=1)
         style.configure("Status.TFrame", background="#f0f5fa")
         
@@ -251,12 +348,14 @@ class WeatherDataDisplay:
         style.configure("Time.TLabel", font=("Helvetica", 10), foreground="#7f8c8d", background="#f0f5fa")
         style.configure("StationTitle.TLabel", font=("Helvetica", 14, "bold"), foreground="#2980b9", background="#ffffff")
         style.configure("StationDetail.TLabel", font=("Helvetica", 12), foreground="#34495e", background="#ffffff")
+        style.configure("WeatherCondition.TLabel", font=("Helvetica", 16, "bold"), foreground="#16a085", background="#ffffff")
         style.configure("Temperature.TLabel", font=("Helvetica", 24, "bold"), foreground="#e74c3c", background="#ffffff")
         style.configure("SummaryValue.TLabel", font=("Helvetica", 18, "bold"), foreground="#3498db", background="#ffffff")
         style.configure("ValueDescription.TLabel", font=("Helvetica", 10), foreground="#7f8c8d", background="#ffffff")
         style.configure("Status.TLabel", font=("Helvetica", 9), foreground="#95a5a6", background="#f0f5fa")
         style.configure("DataKey.TLabel", font=("Helvetica", 11, "bold"), foreground="#2c3e50", background="#ffffff")
         style.configure("DataValue.TLabel", font=("Helvetica", 11), foreground="#34495e", background="#ffffff")
+        style.configure("StationSelector.TLabel", font=("Helvetica", 12), foreground="#34495e", background="#f0f5fa")
 
     def update_time(self):
         current_time = datetime.now().strftime("%B %d, %Y %H:%M:%S")
@@ -265,6 +364,41 @@ class WeatherDataDisplay:
     def clock_tick(self):
         self.update_time()
         self.window.after(1000, self.clock_tick)
+    
+    def refresh_station_list(self):
+        """Update the station dropdown with available stations"""
+        current_selection = self.station_var.get()
+        
+        station_names = []
+        for station_id, data in stations_data.items():
+            station_name = data.get("station_name", "Unknown Station")
+            station_names.append(f"{station_name} ({station_id})")
+        
+        if not station_names:
+            station_names = ["No stations available"]
+        
+        self.station_dropdown['values'] = station_names
+        
+        # Try to keep the same selection if possible
+        if current_selection in station_names:
+            self.station_var.set(current_selection)
+        else:
+            self.station_var.set(station_names[0])
+            # If we have a valid station, update the display
+            if station_names[0] != "No stations available":
+                self.on_station_selected(None)
+    
+    def on_station_selected(self, event):
+        """Handle station selection from dropdown"""
+        selection = self.station_var.get()
+        if selection == "No stations available":
+            return
+        
+        # Extract station ID from selection (format: "Station Name (ID)")
+        station_id = selection.split("(")[-1].rstrip(")")
+        
+        if station_id in stations_data:
+            self.update_data(stations_data[station_id])
     
     def update_data(self, data_dict):
         # Update the last update time
@@ -275,38 +409,43 @@ class WeatherDataDisplay:
         if "station_name" in data_dict:
             self.station_label.config(text=data_dict["station_name"])
         if "location" in data_dict:
-            self.location_var.set(f"Location: {data_dict['location']}")
+            if isinstance(data_dict["location"], list) and len(data_dict["location"]) >= 2:
+                # We have coordinates, get location name
+                lat, lon = data_dict["location"][0], data_dict["location"][1]
+                location_name = data_dict.get("location_name", get_location_name(lat, lon))
+                self.location_var.set(f"Location: {location_name} ({lat}, {lon})")
+            else:
+                self.location_var.set(f"Location: {data_dict['location']}")
         if "station_id" in data_dict:
             self.id_var.set(f"Station ID: {data_dict['station_id']}")
         
+        # Update weather condition (translate code to description)
+        if "weather_code" in data_dict:
+            weather_code = data_dict["weather_code"]
+            try:
+                if isinstance(weather_code, (int, str)) and int(weather_code) in WEATHER_CODES:
+                    weather_desc = WEATHER_CODES[int(weather_code)]
+                    self.weather_condition_var.set(f"Weather Condition: {weather_desc} (Code: {weather_code})")
+                else:
+                    self.weather_condition_var.set(f"Weather Condition: Unknown (Code: {weather_code})")
+            except (ValueError, TypeError):
+                self.weather_condition_var.set(f"Weather Condition: {weather_code}")
+        
         # Update summary values
         if "temperature" in data_dict:
-            temp_value = data_dict["temperature"]
-            if isinstance(temp_value, (int, float)):
-                self.temp_var.set(f"{temp_value:.1f}°C")
-            else:
-                self.temp_var.set(f"{temp_value}")
+            self.temp_var.set(f"{data_dict['temperature']}" if not isinstance(data_dict['temperature'], (int, float)) 
+                             else f"{data_dict['temperature']:.1f}°C")
         
-        if "humidity" in data_dict:
-            humidity_value = data_dict["humidity"]
-            if isinstance(humidity_value, (int, float)):
-                self.humidity_var.set(f"{humidity_value:.1f}%")
-            else:
-                self.humidity_var.set(f"{humidity_value}")
+        # Update wind speed (from 'windspeed' or 'wind_speed')
+        wind_key = "windspeed" if "windspeed" in data_dict else "wind_speed"
+        if wind_key in data_dict:
+            self.wind_var.set(f"{data_dict[wind_key]}" if not isinstance(data_dict[wind_key], (int, float)) 
+                             else f"{data_dict[wind_key]:.1f} m/s")
         
-        if "pressure" in data_dict:
-            pressure_value = data_dict["pressure"]
-            if isinstance(pressure_value, (int, float)):
-                self.pressure_var.set(f"{pressure_value:.1f} hPa")
-            else:
-                self.pressure_var.set(f"{pressure_value}")
-        
-        if "wind_speed" in data_dict:
-            wind_value = data_dict["wind_speed"]
-            if isinstance(wind_value, (int, float)):
-                self.wind_var.set(f"{wind_value:.1f} m/s")
-            else:
-                self.wind_var.set(f"{wind_value}")
+        # Update wind direction
+        if "wind_direction" in data_dict:
+            self.wind_dir_var.set(f"{data_dict['wind_direction']}" if not isinstance(data_dict['wind_direction'], (int, float)) 
+                                else f"{data_dict['wind_direction']}°")
         
         # Clear old data in the detailed section
         for widget in self.data_frame.winfo_children():
@@ -316,7 +455,7 @@ class WeatherDataDisplay:
         row = 0
         for key, value in data_dict.items():
             # Skip the ones we've already handled in the summary
-            if key in ["temperature", "humidity", "pressure", "wind_speed", "station_name", "location", "station_id"]:
+            if key in ["temperature", "humidity", "pressure", "station_name", "location", "station_id"]:
                 continue
                 
             # Create a frame for each data pair
@@ -331,14 +470,39 @@ class WeatherDataDisplay:
             label_key = ttk.Label(pair_frame, text=f"{formatted_key}:", style="DataKey.TLabel")
             label_key.pack(side=tk.LEFT, padx=10)
             
+            # Value processing for special cases
+            display_value = value
+            if key == "weather_code" and isinstance(value, (int, str)):
+                try:
+                    code_int = int(value)
+                    if code_int in WEATHER_CODES:
+                        display_value = f"{value} ({WEATHER_CODES[code_int]})"
+                except (ValueError, TypeError):
+                    pass
+            elif key == "time":
+                # Format time if it's an ISO timestamp
+                try:
+                    if isinstance(value, str) and 'T' in value:
+                        dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                        display_value = dt.strftime("%Y-%m-%d %H:%M:%S")
+                except (ValueError, TypeError):
+                    pass
+                    
             # Value label
-            label_value = ttk.Label(pair_frame, text=str(value), style="DataValue.TLabel", wraplength=400)
+            label_value = ttk.Label(pair_frame, text=str(display_value), style="DataValue.TLabel", wraplength=400)
             label_value.pack(side=tk.RIGHT, padx=10, fill=tk.X, expand=True)
             
             row += 1
+    
+    def is_alive(self):
+        """Check if window is still open"""
+        try:
+            return self.window.winfo_exists()
+        except:
+            return False
 
 # Server Thread
-def start_server(gui, display_panel):
+def start_server(gui):
     # Create a basic TCP socket
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     
@@ -366,7 +530,7 @@ def start_server(gui, display_panel):
                 gui.log(f"Secure client connected: {client_addr}", "CONNECT")
                 gui.update_status(f"{gui.clients_connected} client(s) connected")
 
-                client_thread = threading.Thread(target=handle_client, args=(ssl_client_socket, gui, display_panel))
+                client_thread = threading.Thread(target=handle_client, args=(ssl_client_socket, gui, client_addr))
                 client_thread.daemon = True
                 client_thread.start()
             except ssl.SSLError as ssl_err:
@@ -376,15 +540,39 @@ def start_server(gui, display_panel):
             gui.log(f"Error accepting client: {str(e)}", "ERROR")
 
 # Client Handler
-def handle_client(client_socket, gui, display_panel):
+def handle_client(client_socket, gui, client_addr):
     try:
         data = client_socket.recv(4096).decode()
         if data:
-            gui.log("Weather Data Received:", "DATA")
+            gui.log(f"Weather Data Received from {client_addr}:", "DATA")
             gui.log(data, "DATA")
             try:
                 data_dict = json.loads(data)
-                display_panel.update_data(data_dict)
+                
+                # Check if we have location coordinates and get location name if needed
+                if "location" in data_dict and isinstance(data_dict["location"], list) and len(data_dict["location"]) >= 2:
+                    lat, lon = data_dict["location"][0], data_dict["location"][1]
+                    if "location_name" not in data_dict:
+                        data_dict["location_name"] = get_location_name(lat, lon)
+                        gui.log(f"Resolved location: {data_dict['location_name']}", "INFO")
+                
+                # Store data by station ID
+                if "station_id" in data_dict:
+                    station_id = data_dict["station_id"]
+                    stations_data[station_id] = data_dict
+                    gui.log(f"Updated data for station {station_id}", "INFO")
+                else:
+                    gui.log("Received data without station ID", "ERROR")
+                
+                # Update display if it's open
+                if gui.data_viewer and gui.data_viewer.is_alive():
+                    # Refresh the station list
+                    gui.data_viewer.refresh_station_list()
+                
+                # Send acknowledgment back to client
+                client_socket.sendall("Data received successfully!".encode())
+                gui.log(f"Sent acknowledgment to {client_addr}", "INFO")
+                
             except json.JSONDecodeError:
                 gui.log("Invalid JSON format from client", "ERROR")
     except Exception as e:
@@ -398,8 +586,7 @@ def handle_client(client_socket, gui, display_panel):
 if __name__ == "__main__":
     root = tk.Tk()
     gui = WeatherServerGUI(root)
-    display_panel = WeatherDataDisplay(root)
-    server_thread = threading.Thread(target=start_server, args=(gui, display_panel))
+    server_thread = threading.Thread(target=start_server, args=(gui,))
     server_thread.daemon = True
     server_thread.start()
     root.mainloop()
