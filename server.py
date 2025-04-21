@@ -216,10 +216,12 @@ class WeatherDataDisplay:
         self.time_frame.pack(fill=tk.X, pady=5)
         
         self.time_var = tk.StringVar()
-        self.update_time()
         self.time_label = ttk.Label(self.time_frame, textvariable=self.time_var, 
                                    style="Time.TLabel")
         self.time_label.pack(side=tk.RIGHT, padx=10)
+        
+        # Set initial time
+        self.update_time()
         
         # Station info frame
         self.station_frame = ttk.Frame(main_frame, style="Station.TFrame")
@@ -483,8 +485,7 @@ class WeatherDataDisplay:
                 # Format time if it's an ISO timestamp
                 try:
                     if isinstance(value, str) and 'T' in value:
-                        dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
-                        display_value = dt.strftime("%Y-%m-%d %H:%M:%S")
+                        display_value = datetime.now().strftime("%B %d, %Y %H:%M:%S")
                 except (ValueError, TypeError):
                     pass
                     
